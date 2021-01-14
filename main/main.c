@@ -28,6 +28,45 @@ void set_axp192_gpio_012(const axp192_t *axp, int gpio, bool low) {
 	axp192_write_reg(axp, AXP192_GPIO20_SIGNAL_STATUS, val);
 }
 
+void set_internal_5v_bus(const axp192_t *axp, bool enable) {
+	// To enable the on-board 5V supply, first N_VBUSEN needs to be pulled
+	// high using GPIO0, then we can enable the EXTEN output, to enable
+	// the SMPS.
+	// To disable it (so either no 5V, or externally supplied 5V), we
+	// do the opposite: First disable EXTEN, then leave GPIO0 floating.
+	// N_VBUSEN will be pulled down by the on-board resistor.
+	// Side note: The pull down is 10k according to the schematic, so that's
+	// a 0.5 mA drain from the GPIO0 LDO as long as the bus supply is active.
+
+	if (enable) {
+		// GPIO0_LDOIO0_VOLTAGE:
+		// Bits 7-4: Voltage. 1v8-3v3 in 0.1 V increments
+		// Set the GPIO0 LDO voltage to 3v3
+		axp192_write_reg(axp, AXP192_GPIO0_LDOIO0_VOLTAGE, 0xf0);
+
+		// GPIO0_CONTROL
+		// Bits 7-3: Reserved
+		// Bits 2-0: 000: NMOS open drain
+		//           001: GPIO
+		//           010: Low noise LDO
+		//           011: Reserved
+		//           100: ADC input
+		//           101: Output low
+		//           11x: Floating
+		// Set to LDO (3v3)
+		axp192_write_reg(axp, AXP192_GPIO0_CONTROL, (2 << 0));
+
+		// Enable EXTEN
+		axp192_set_rail_state(axp, AXP192_RAIL_EXTEN, true);
+	} else {
+		// Disable EXTEN
+		axp192_set_rail_state(axp, AXP192_RAIL_EXTEN, false);
+
+		// Set GPIO0 to float
+		axp192_write_reg(axp, AXP192_GPIO0_CONTROL, (7 << 0));
+	}
+}
+
 void app_main(void)
 {
 	printf("Hello world!\n");
@@ -242,6 +281,21 @@ void app_main(void)
 			vTaskDelay(300 / portTICK_PERIOD_MS);
 			axp192_set_rail_state(&axp, AXP192_RAIL_DCDC3, false);
 			vTaskDelay(300 / portTICK_PERIOD_MS);
+
+			printf(".");
+			fflush(stdout);
+		}
+		printf("Done.\n");
+	}
+
+	// Test bus 5V
+	{
+		printf("5V Bus");
+		for (int i = 0; i < 5; i++) {
+			set_internal_5v_bus(&axp, true);
+			vTaskDelay(1000 / portTICK_PERIOD_MS);
+			set_internal_5v_bus(&axp, false);
+			vTaskDelay(1000 / portTICK_PERIOD_MS);
 
 			printf(".");
 			fflush(stdout);
