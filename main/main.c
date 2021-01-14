@@ -1,3 +1,6 @@
+// SPDX: MIT
+// Copyright 2021 Brian Starkey <stark3y@gmail.com>
+
 #include <stdio.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
