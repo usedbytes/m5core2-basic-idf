@@ -35,41 +35,105 @@ void app_main(void)
 
 	i2c_init();
 
-	// don't axp192_init() because we don't wan't to run the initial commands
-	// axp192_init(&axp);
+	// Voltage configuration
+	{
 
-	// DCDC1: MCU_VDD  (3v3)
-	// DCDC2: Not connected
-	// DCDC3: LCD_BL   (2v8)
-	// LDO1: RTC, non-configured
-	// LDO2: PERI_VDD  (3v3)
-	// LDO3: VIB_MOTOR (2v0)
-	struct rail_entry {
-		const char *name;
-		axp192_rail_t rail;
-		uint16_t millivolts;
-	};
+		// don't axp192_init() because we don't wan't to run the initial commands
+		// axp192_init(&axp);
 
-	struct rail_entry rails[] = {
-		{ "DCDC1 (MCU_VDD)",  AXP192_RAIL_DCDC1, 3300 },
-		// DCDC2 not connected
-		{ "DCDC3 (LCD_BL)",   AXP192_RAIL_DCDC3, 2800 },
-		// LDO1 not configurable
-		{ "LDO2 (PERI_VDD)",  AXP192_RAIL_LDO2,  3300 },
-		{ "LDO3 (VIB_MOTOR)", AXP192_RAIL_LDO3,  2000 },
-	};
+		// DCDC1: MCU_VDD  (3v3)
+		// DCDC2: Not connected
+		// DCDC3: LCD_BL   (2v8)
+		// LDO1: RTC, non-configured
+		// LDO2: PERI_VDD  (3v3)
+		// LDO3: VIB_MOTOR (2v0)
+		struct rail_entry {
+			const char *name;
+			axp192_rail_t rail;
+			uint16_t millivolts;
+		};
 
-	for (int i = 0; i < sizeof(rails) / sizeof(rails[0]); i++) {
-		uint16_t millivolts;
-		axp192_err_t err = axp192_get_rail_millivolts(&axp, rails[i].rail, &millivolts);
-		if (err != AXP192_ERROR_OK) {
-			printf("%s: get failed\n", rails[i].name);
-			continue;
+		// The voltages are based on the Arduino demo code.
+		struct rail_entry rails[] = {
+			{ "DCDC1 (MCU_VDD)",  AXP192_RAIL_DCDC1, 3300 },
+			// DCDC2 not connected
+			{ "DCDC3 (LCD_BL)",   AXP192_RAIL_DCDC3, 2800 },
+			// LDO1 not configurable
+			{ "LDO2 (PERI_VDD)",  AXP192_RAIL_LDO2,  3300 },
+			{ "LDO3 (VIB_MOTOR)", AXP192_RAIL_LDO3,  2000 },
+		};
+
+		for (int i = 0; i < sizeof(rails) / sizeof(rails[0]); i++) {
+			bool enabled;
+			uint16_t millivolts;
+			axp192_err_t err = axp192_get_rail_millivolts(&axp, rails[i].rail, &millivolts);
+			if (err != AXP192_ERROR_OK) {
+				printf("%s: get failed\n", rails[i].name);
+				continue;
+			}
+
+			enabled = false;
+			err = axp192_get_rail_state(&axp, rails[i].rail, &enabled);
+			if (err != AXP192_ERROR_OK) {
+				printf("%s: get state failed\n", rails[i].name);
+				continue;
+			}
+
+			printf("%s: get %d mV (%s)\n", rails[i].name, millivolts, enabled ? "enabled" : "disabled");
+
+			err = axp192_set_rail_millivolts(&axp, rails[i].rail, rails[i].millivolts);
+			if (err != AXP192_ERROR_OK) {
+				printf("%s: set failed\n", rails[i].name);
+				continue;
+			}
+
+			printf("%s: set %d mV\n", rails[i].name, rails[i].millivolts);
 		}
-
-		printf("%s: get %d mV\n", rails[i].name, millivolts);
 	}
 
+	// Battery
+	{
+		// Configure charger, 4.2V 190mA
+		axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_1, 0xC1);
+		// Default values - 40 min precharge, 8 hour constant current
+		axp192_write_reg(&axp, AXP192_CHARGE_CONTROL_2, 0x41);
+
+		float volts;
+		axp192_read(&axp, AXP192_BATTERY_VOLTAGE, &volts);
+		printf("Battery voltage: %.2f volts\n", volts);
+	}
+
+	// Test vibration
+	{
+		printf("Vibration");
+		for (int i = 0; i < 5; i++) {
+			axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
+			vTaskDelay(300 / portTICK_PERIOD_MS);
+			axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+			vTaskDelay(300 / portTICK_PERIOD_MS);
+
+			printf(".");
+			fflush(stdout);
+		}
+		printf("Done.\n");
+	}
+
+	// Test LCD backlight
+	{
+		printf("LCD Backlight");
+		for (int i = 0; i < 5; i++) {
+			axp192_set_rail_state(&axp, AXP192_RAIL_DCDC3, true);
+			vTaskDelay(300 / portTICK_PERIOD_MS);
+			axp192_set_rail_state(&axp, AXP192_RAIL_DCDC3, false);
+			vTaskDelay(300 / portTICK_PERIOD_MS);
+
+			printf(".");
+			fflush(stdout);
+		}
+		printf("Done.\n");
+	}
+
+	printf("Finished.\n");
 	fflush(stdout);
 
 	for ( ; ; ) {
