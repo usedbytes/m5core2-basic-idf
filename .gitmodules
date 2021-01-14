@@ -3,4 +3,4 @@
 	url = https://github.com/usedbytes/axp192.git
 [submodule "components/esp_i2c_hal"]
 	path = components/esp_i2c_hal
-	url = /home/brian/sources/esp/projects/tbeam/components/esp_i2c_hal
+	url = https://github.com/tuupola/esp_i2c_helper
