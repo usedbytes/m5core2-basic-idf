@@ -1,6 +1,6 @@
 [submodule "components/axp192"]
 	path = components/axp192
-	url = /home/brian/sources/esp/projects/tbeam/components/axp192
+	url = https://github.com/usedbytes/axp192.git
 [submodule "components/esp_i2c_hal"]
 	path = components/esp_i2c_hal
 	url = /home/brian/sources/esp/projects/tbeam/components/esp_i2c_hal
