@@ -18,15 +18,46 @@
 
 #define LV_TICK_PERIOD_MS 1
 
-static void btn_event_cb(lv_obj_t *btn, lv_event_t event)
-{
-	if(event == LV_EVENT_CLICKED) {
-		static uint8_t cnt = 0;
-		cnt++;
+// If true, we'll run through the tests at boot
+#define TEST_BEFORE_GUI_START 0
+// If true, we'll bring up the GUI
+#define START_GUI             1
 
-		// Button's first child is its label
-		lv_obj_t *label = lv_obj_get_child(btn, NULL);
-		lv_label_set_text_fmt(label, "Button: %d", cnt);
+// Global for convenience
+const axp192_t axp = {
+	.read = &i2c_read,
+	.write = &i2c_write,
+};
+
+static void set_led(const axp192_t *axp, bool on);
+static void set_vibration(const axp192_t *axp, bool on);
+static void set_internal_5v_bus(const axp192_t *axp, bool on);
+
+enum toggle_id {
+	TOGGLE_LED = 0,
+	TOGGLE_VIB,
+	TOGGLE_5V,
+};
+
+static void toggle_event_cb(lv_obj_t *toggle, lv_event_t event)
+{
+	if(event == LV_EVENT_VALUE_CHANGED) {
+		bool state = lv_switch_get_state(toggle);
+		enum toggle_id *id = lv_obj_get_user_data(toggle);
+
+		// Note: This is running in the GUI thread, so prolonged i2c
+		// comms might cause some jank
+		switch (*id) {
+		case TOGGLE_LED:
+			set_led(&axp, state);
+			break;
+		case TOGGLE_VIB:
+			set_vibration(&axp, state);
+			break;
+		case TOGGLE_5V:
+			set_internal_5v_bus(&axp, state);
+			break;
+		}
 	}
 }
 
@@ -40,12 +71,7 @@ static void gui_timer_tick(void *arg)
 
 static void gui_thread(void *pvParameter)
 {
-	// Unused
 	(void) pvParameter;
-
-	lv_init();
-
-	lvgl_driver_init();
 
 	static lv_color_t bufs[2][DISP_BUF_SIZE];
 	static lv_disp_buf_t disp_buf;
@@ -79,26 +105,52 @@ static void gui_thread(void *pvParameter)
 	ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, LV_TICK_PERIOD_MS * 1000));
 
 
-	// Create a button with a label
-	lv_obj_t *btn = lv_btn_create(lv_scr_act(), NULL);
-	lv_obj_set_size(btn, 200, 100);
-	lv_obj_align(btn, NULL, LV_ALIGN_CENTER, 0, 0);
-	lv_obj_set_event_cb(btn, btn_event_cb);
-	lv_obj_t *label = lv_label_create(btn, NULL);
-	lv_label_set_text(label, "Button");
+	// Full screen root container
+	lv_obj_t *root = lv_cont_create(lv_scr_act(), NULL);
+	lv_obj_set_size(root, 320, 240);
+	lv_cont_set_layout(root, LV_LAYOUT_COLUMN_MID);
+	// Don't let the containers be clicked on
+	lv_obj_set_click(root, false);
+
+	// Create rows of switches for different functions
+	struct {
+		const char *label;
+		bool init;
+		enum toggle_id id;
+	} switches[] = {
+		{ "LED",     true,  TOGGLE_LED },
+		{ "Vibrate", false, TOGGLE_VIB },
+		{ "5V Bus",  false, TOGGLE_5V },
+	};
+	for (int i = 0; i < sizeof(switches) / sizeof(switches[0]); i++) {
+		lv_obj_t *row = lv_cont_create(root, NULL);
+		lv_cont_set_layout(row, LV_LAYOUT_ROW_MID);
+		lv_obj_set_size(row, 200, 0);
+		lv_cont_set_fit2(row, LV_FIT_NONE, LV_FIT_TIGHT);
+		// Don't let the containers be clicked on
+		lv_obj_set_click(row, false);
+
+		lv_obj_t *toggle = lv_switch_create(row, NULL);
+		if (switches[i].init) {
+			lv_switch_on(toggle, LV_ANIM_OFF);
+		}
+		lv_obj_set_user_data(toggle, &switches[i].id);
+		lv_obj_set_event_cb(toggle, toggle_event_cb);
+
+		lv_obj_t *label = lv_label_create(row, NULL);
+		lv_label_set_text(label, switches[i].label);
+	}
 
 	while (1) {
 		vTaskDelay(10 / portTICK_PERIOD_MS);
 
-		// Note: If you call lvgl functions from any other thread,
-		// this needs to be protected by a mutex
 		lv_task_handler();
 	}
 
 	// Never returns
 }
 
-void set_axp192_gpio_012(const axp192_t *axp, int gpio, bool low)
+static void set_axp192_gpio_012(const axp192_t *axp, int gpio, bool low)
 {
 	if ((gpio < 0) || (gpio > 2)) {
 		return;
@@ -119,7 +171,17 @@ void set_axp192_gpio_012(const axp192_t *axp, int gpio, bool low)
 	axp192_write_reg(axp, AXP192_GPIO20_SIGNAL_STATUS, val);
 }
 
-void set_internal_5v_bus(const axp192_t *axp, bool enable)
+static void set_led(const axp192_t *axp, bool on)
+{
+	set_axp192_gpio_012(axp, 1, on);
+}
+
+static void set_vibration(const axp192_t *axp, bool on)
+{
+	axp192_set_rail_state(axp, AXP192_RAIL_LDO3, on);
+}
+
+static void set_internal_5v_bus(const axp192_t *axp, bool on)
 {
 	// To enable the on-board 5V supply, first N_VBUSEN needs to be pulled
 	// high using GPIO0, then we can enable the EXTEN output, to enable
@@ -130,7 +192,7 @@ void set_internal_5v_bus(const axp192_t *axp, bool enable)
 	// Side note: The pull down is 10k according to the schematic, so that's
 	// a 0.5 mA drain from the GPIO0 LDO as long as the bus supply is active.
 
-	if (enable) {
+	if (on) {
 		// GPIO0_LDOIO0_VOLTAGE:
 		// Bits 7-4: Voltage. 1v8-3v3 in 0.1 V increments
 		// Set the GPIO0 LDO voltage to 3v3
@@ -179,12 +241,13 @@ void app_main(void)
 
 	printf("Free heap: %d\n", esp_get_free_heap_size());
 
-	const axp192_t axp = {
-		.read = &i2c_read,
-		.write = &i2c_write,
-	};
+	// Have to initialise these here, because lvgl_driver_init unconditionally
+	// sets up the i2c bus
+	lv_init();
+	lvgl_driver_init();
 
-	i2c_init();
+	// Don't i2c_init()
+	// i2c_init();
 
 	// Voltage configuration
 	{
@@ -334,29 +397,30 @@ void app_main(void)
 
 	// Test LED
 	// Low side is on AXP GPIO1
-	if (0) {
+	if (TEST_BEFORE_GUI_START) {
 		printf("LED");
 		for (int i = 0; i < 5; i++) {
-			set_axp192_gpio_012(&axp, 1, true);
+			set_led(&axp, true);
 			vTaskDelay(300 / portTICK_PERIOD_MS);
-			set_axp192_gpio_012(&axp, 1, false);
+			set_led(&axp, false);
 			vTaskDelay(300 / portTICK_PERIOD_MS);
 
 			printf(".");
 			fflush(stdout);
 		}
 		printf("Done.\n");
-		// Leave the LED on
-		set_axp192_gpio_012(&axp, 1, true);
+
 	}
+	// Always turn the LED on
+	set_led(&axp, true);
 
 	// Test vibration
-	if (0) {
+	if (TEST_BEFORE_GUI_START) {
 		printf("Vibration");
 		for (int i = 0; i < 5; i++) {
-			axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
+			set_vibration(&axp, true);
 			vTaskDelay(300 / portTICK_PERIOD_MS);
-			axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, false);
+			set_vibration(&axp, false);
 			vTaskDelay(300 / portTICK_PERIOD_MS);
 
 			printf(".");
@@ -366,7 +430,7 @@ void app_main(void)
 	}
 
 	// Test LCD backlight
-	if (0) {
+	if (TEST_BEFORE_GUI_START) {
 		printf("LCD Backlight");
 		for (int i = 0; i < 5; i++) {
 			axp192_set_rail_state(&axp, AXP192_RAIL_DCDC3, true);
@@ -381,7 +445,7 @@ void app_main(void)
 	}
 
 	// Test bus 5V
-	if (0) {
+	if (TEST_BEFORE_GUI_START) {
 		printf("5V Bus");
 		set_internal_5v_bus(&axp, true);
 		printf(".");
@@ -393,7 +457,7 @@ void app_main(void)
 	}
 
 	// Graphics
-	if (1) {
+	if (START_GUI) {
 		// Backlight
 		axp192_set_rail_state(&axp, AXP192_RAIL_DCDC3, true);
 
@@ -407,11 +471,11 @@ void app_main(void)
 		xTaskCreatePinnedToCore(gui_thread, "gui", 4096*2, NULL, 0, NULL, 1);
 	}
 
-	printf("Finished.\n");
+	printf("Running...\n");
 	fflush(stdout);
 
 	for ( ; ; ) {
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		vTaskDelay(portMAX_DELAY);
 	}
 	printf("Restarting now.\n");
 	esp_restart();
