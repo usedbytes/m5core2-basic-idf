@@ -1,17 +1,105 @@
 // SPDX: MIT
 // Copyright 2021 Brian Starkey <stark3y@gmail.com>
+// Portions from lvgl example: https://github.com/lvgl/lv_port_esp32/blob/master/main/main.c
 
 #include <stdio.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_spi_flash.h"
 
 #include "axp192.h"
 #include "i2c_helper.h"
 
-void set_axp192_gpio_012(const axp192_t *axp, int gpio, bool low) {
+#include "lvgl.h"
+#include "lvgl_helpers.h"
+
+#define LV_TICK_PERIOD_MS 1
+
+static void btn_event_cb(lv_obj_t *btn, lv_event_t event)
+{
+	if(event == LV_EVENT_CLICKED) {
+		static uint8_t cnt = 0;
+		cnt++;
+
+		// Button's first child is its label
+		lv_obj_t *label = lv_obj_get_child(btn, NULL);
+		lv_label_set_text_fmt(label, "Button: %d", cnt);
+	}
+}
+
+static void gui_timer_tick(void *arg)
+{
+	// Unused
+	(void) arg;
+
+	lv_tick_inc(LV_TICK_PERIOD_MS);
+}
+
+static void gui_thread(void *pvParameter)
+{
+	// Unused
+	(void) pvParameter;
+
+	lv_init();
+
+	lvgl_driver_init();
+
+	static lv_color_t bufs[2][DISP_BUF_SIZE];
+	static lv_disp_buf_t disp_buf;
+	uint32_t size_in_px = DISP_BUF_SIZE;
+
+	// Set up the frame buffers
+	lv_disp_buf_init(&disp_buf, &bufs[0], &bufs[1], size_in_px);
+
+	// Set up the display driver
+	lv_disp_drv_t disp_drv;
+	lv_disp_drv_init(&disp_drv);
+	disp_drv.flush_cb = disp_driver_flush;
+	disp_drv.buffer = &disp_buf;
+	lv_disp_drv_register(&disp_drv);
+
+	// Register the touch screen. All of the properties of it
+	// are set via the build config
+	lv_indev_drv_t indev_drv;
+	lv_indev_drv_init(&indev_drv);
+	indev_drv.read_cb = touch_driver_read;
+	indev_drv.type = LV_INDEV_TYPE_POINTER;
+	lv_indev_drv_register(&indev_drv);
+
+	// Timer to drive the main lvgl tick
+	const esp_timer_create_args_t periodic_timer_args = {
+		.callback = &gui_timer_tick,
+		.name = "periodic_gui"
+	};
+	esp_timer_handle_t periodic_timer;
+	ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
+	ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, LV_TICK_PERIOD_MS * 1000));
+
+
+	// Create a button with a label
+	lv_obj_t *btn = lv_btn_create(lv_scr_act(), NULL);
+	lv_obj_set_size(btn, 200, 100);
+	lv_obj_align(btn, NULL, LV_ALIGN_CENTER, 0, 0);
+	lv_obj_set_event_cb(btn, btn_event_cb);
+	lv_obj_t *label = lv_label_create(btn, NULL);
+	lv_label_set_text(label, "Button");
+
+	while (1) {
+		vTaskDelay(10 / portTICK_PERIOD_MS);
+
+		// Note: If you call lvgl functions from any other thread,
+		// this needs to be protected by a mutex
+		lv_task_handler();
+	}
+
+	// Never returns
+}
+
+void set_axp192_gpio_012(const axp192_t *axp, int gpio, bool low)
+{
 	if ((gpio < 0) || (gpio > 2)) {
 		return;
 	}
@@ -31,7 +119,8 @@ void set_axp192_gpio_012(const axp192_t *axp, int gpio, bool low) {
 	axp192_write_reg(axp, AXP192_GPIO20_SIGNAL_STATUS, val);
 }
 
-void set_internal_5v_bus(const axp192_t *axp, bool enable) {
+void set_internal_5v_bus(const axp192_t *axp, bool enable)
+{
 	// To enable the on-board 5V supply, first N_VBUSEN needs to be pulled
 	// high using GPIO0, then we can enable the EXTEN output, to enable
 	// the SMPS.
@@ -245,7 +334,7 @@ void app_main(void)
 
 	// Test LED
 	// Low side is on AXP GPIO1
-	{
+	if (0) {
 		printf("LED");
 		for (int i = 0; i < 5; i++) {
 			set_axp192_gpio_012(&axp, 1, true);
@@ -262,7 +351,7 @@ void app_main(void)
 	}
 
 	// Test vibration
-	{
+	if (0) {
 		printf("Vibration");
 		for (int i = 0; i < 5; i++) {
 			axp192_set_rail_state(&axp, AXP192_RAIL_LDO3, true);
@@ -277,7 +366,7 @@ void app_main(void)
 	}
 
 	// Test LCD backlight
-	{
+	if (0) {
 		printf("LCD Backlight");
 		for (int i = 0; i < 5; i++) {
 			axp192_set_rail_state(&axp, AXP192_RAIL_DCDC3, true);
@@ -292,18 +381,30 @@ void app_main(void)
 	}
 
 	// Test bus 5V
-	{
+	if (0) {
 		printf("5V Bus");
-		for (int i = 0; i < 5; i++) {
-			set_internal_5v_bus(&axp, true);
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
-			set_internal_5v_bus(&axp, false);
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-			printf(".");
-			fflush(stdout);
-		}
+		set_internal_5v_bus(&axp, true);
+		printf(".");
+		fflush(stdout);
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		set_internal_5v_bus(&axp, false);
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
 		printf("Done.\n");
+	}
+
+	// Graphics
+	if (1) {
+		// Backlight
+		axp192_set_rail_state(&axp, AXP192_RAIL_DCDC3, true);
+
+		// Logic
+		axp192_set_rail_state(&axp, AXP192_RAIL_LDO2, true);
+
+		// Wait a bit for everything to settle
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+
+		// Needs to be pinned to a core
+		xTaskCreatePinnedToCore(gui_thread, "gui", 4096*2, NULL, 0, NULL, 1);
 	}
 
 	printf("Finished.\n");
