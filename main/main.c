@@ -171,6 +171,27 @@ static void set_axp192_gpio_012(const axp192_t *axp, int gpio, bool low)
 	axp192_write_reg(axp, AXP192_GPIO20_SIGNAL_STATUS, val);
 }
 
+static void set_axp192_gpio_34(const axp192_t *axp, int gpio, bool low)
+{
+	if ((gpio < 3) || (gpio > 4)) {
+		return;
+	}
+
+	uint8_t val = 0;
+	axp192_read_reg(axp, AXP192_GPIO40_SIGNAL_STATUS, &val);
+
+	uint8_t mask = (1 << (gpio - 3));
+	if (low) {
+		// Value of 0 activates the NMOS, pulling the pin low
+		val &= ~mask;
+	} else {
+		// Value of 1 sets floating
+		val |= mask;
+	}
+
+	axp192_write_reg(axp, AXP192_GPIO40_SIGNAL_STATUS, val);
+}
+
 static void set_led(const axp192_t *axp, bool on)
 {
 	set_axp192_gpio_012(axp, 1, on);
@@ -243,6 +264,24 @@ void app_main(void)
 
 	// Have to initialise these here, because lvgl_driver_init unconditionally
 	// sets up the i2c bus
+	// FIXME: This is *also* the thing that does the LCD controller init,
+	// which leads to a catch-22 situation:
+	//  - We can't interact with the AXP192 until i2c is set up
+	//  - lvgl_driver_init() sets up i2c
+	//  - We need to enable LCD power before calling lvgl_driver_init()
+	//  Obviously this doesn't work out on a cold boot.
+	//
+	//  For the LCD, we can simply call disp_driver_init() just before
+	//  starting the GUI thread - thankfully that's exported and has no
+	//  side effects.
+	//  For the touch controller, the first call to touch_driver_init()
+	//  will fail, as the power is off, and therefore "inited" won't get
+	//  set. That allows the second call to try again, and it also
+	//  works out - but and error is printed from the first failed attempt.
+	//
+	//  The i2c bus management between the AXP192 driver and LVGL drivers
+	//  is really a mess, and would need to be sorted out to fix this
+	//  properly
 	lv_init();
 	lvgl_driver_init();
 
@@ -466,6 +505,15 @@ void app_main(void)
 
 		// Wait a bit for everything to settle
 		vTaskDelay(100 / portTICK_PERIOD_MS);
+
+		// Reset and re-initialise the LCD and touch controller
+		// (see comment above lvgl_driver_init())
+		set_axp192_gpio_34(&axp, 4, true);
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+		set_axp192_gpio_34(&axp, 4, false);
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+		touch_driver_init();
+		disp_driver_init();
 
 		// Needs to be pinned to a core
 		xTaskCreatePinnedToCore(gui_thread, "gui", 4096*2, NULL, 0, NULL, 1);
