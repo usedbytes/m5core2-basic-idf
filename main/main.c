@@ -350,8 +350,8 @@ void app_main(void)
 		//           01: NMOS open drain
 		//           10: GPIO
 		//           11: ADC Input
-		// Set GPIO4 (LCD_RST) and GPIO3 (NC) to GPIO
-		axp192_write_reg(&axp, AXP192_GPIO40_FUNCTION_CONTROL, (1 << 7) | (2 << 2) | (2 << 0));
+		// Set GPIO4 (LCD_RST) and GPIO3 (NC) to NMOS OD
+		axp192_write_reg(&axp, AXP192_GPIO40_FUNCTION_CONTROL, (1 << 7) | (1 << 2) | (1 << 0));
 
 		// PEK (power enable key)
 		// Bits 7-6: Boot time
